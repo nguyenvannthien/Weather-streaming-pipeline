@@ -1,0 +1,46 @@
+[project]
+name = "weather-streaming-pipeline"
+version = "0.1.0"
+description = "Real-time weather data pipeline using Kafka and PySpark"
+readme = "README.md"
+# Spark 3.5.0 works most stably on Python 3.11
+requires-python = ">=3.10,<3.12"
+dependencies = [
+    "loguru>=0.7.2",
+    "python-dotenv>=1.0.1",
+]
+
+[dependency-groups]
+# Group for Consumer (Spark)
+consumer = [
+    "pyspark==3.5.0",
+    "psycopg2-binary==2.9.9",
+]
+# Group for Producer (Kafka + API)
+producer = [
+    "kafka-python-ng>=2.2.3",
+    "requests>=2.31.0",
+]
+# Group for Dashboard (Streamlit + PostgreSQL)
+dashboard = [
+    "streamlit==1.36.0",
+    "pandas==2.2.2",
+    "plotly==5.22.0",
+    "psycopg2-binary==2.9.9",
+]
+# Group for Historical Loader (Archive API -> PostgreSQL)
+historical = [
+    "requests>=2.31.0",
+    "psycopg2-binary==2.9.9",
+]
+# Group for Hybrid Forecasting (LSTM + ECMWF -> PostgreSQL)
+forecasting = [
+    "numpy==1.26.4",
+    "pandas==2.2.2",
+    "psycopg2-binary==2.9.9",
+    "requests>=2.31.0",
+    "tensorflow-cpu==2.16.2",
+]
+[tool.uv]
+# Force uv to use Python 3.11 when syncing in Docker
+python-preference = "only-managed"

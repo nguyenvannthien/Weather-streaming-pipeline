@@ -1,0 +1,185 @@
+services:
+  # 1. Zookeeper - Distributed Coordination for Kafka
+  zookeeper:
+    image: zookeeper:3.9.2
+    ports:
+      - "2181:2181"
+    environment:
+      ZOO_MY_ID: 1
+
+  # 2. Kafka Broker
+  kafka:
+    image: wurstmeister/kafka:latest
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_ADVERTISED_HOST_NAME: kafka
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_PORT: 9092
+      # Automatically creates the weather_data topic with 1 partition and 1 replica
+      KAFKA_CREATE_TOPICS: "weather_data:1:1"
+    depends_on:
+      - zookeeper
+
+  # 3. Kafka Exporter - Extracts Kafka metrics for Prometheus
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    restart: on-failure
+    command: ["--kafka.server=kafka:9092"]
+    ports:
+      - "9308:9308"
+    depends_on:
+      - kafka
+
+  # 4. Prometheus - Time-series Database for Metrics Storage
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    depends_on:
+      - kafka-exporter
+
+  # 5. Grafana - Visualization Dashboard
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      # Optional: Enable anonymous access to bypass login screen
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      # 1. Automated Prometheus connection (Data Source provisioning)
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      # 2. Automated loading of dashboard provider settings
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+      # 3. Mount folder containing actual JSON dashboard files
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - prometheus
+
+  # 6. Weather Producer (Python Ingestion App)
+  producer:
+    build:
+      context: .
+      dockerfile: producer/Dockerfile
+    env_file: .env
+    restart: on-failure
+    depends_on:
+      - kafka
+
+  # 7. Spark Consumer (PySpark Streaming App)
+  spark-consumer:
+    build:
+      context: .
+      dockerfile: consumer/Dockerfile
+    env_file: .env
+    restart: on-failure
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: weather_db
+      POSTGRES_USER: weather_user
+      POSTGRES_PASSWORD: weather_password
+      AGGREGATION_WINDOW: ${AGGREGATION_WINDOW:-2 minutes}
+      SPARK_TRIGGER_INTERVAL: ${SPARK_TRIGGER_INTERVAL:-2 minutes}
+    depends_on:
+      - kafka
+      - postgres
+
+  # 8. Historical Weather Loader (2-year backfill for model training)
+  historical-loader:
+    build:
+      context: .
+      dockerfile: historical_loader/Dockerfile
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: weather_db
+      POSTGRES_USER: weather_user
+      POSTGRES_PASSWORD: weather_password
+    depends_on:
+      - postgres
+    profiles:
+      - tools
+    restart: "no"
+
+  # 9. Hybrid Forecasting Service (LSTM + ECMWF)
+  forecast-service:
+    build:
+      context: .
+      dockerfile: forecasting/Dockerfile
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: weather_db
+      POSTGRES_USER: weather_user
+      POSTGRES_PASSWORD: weather_password
+      FORECAST_MODE: service
+      MODEL_DIR: /app/models
+    volumes:
+      - ./forecasting/models:/app/models
+    depends_on:
+      - postgres
+      - spark-consumer
+    restart: on-failure
+
+  forecast-trainer:
+    build:
+      context: .
+      dockerfile: forecasting/Dockerfile
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: weather_db
+      POSTGRES_USER: weather_user
+      POSTGRES_PASSWORD: weather_password
+      FORECAST_MODE: train
+      MODEL_DIR: /app/models
+    volumes:
+      - ./forecasting/models:/app/models
+    depends_on:
+      - postgres
+    profiles:
+      - tools
+    restart: "no"
+
+  # 10. PostgreSQL Database for Processed Data Storage
+  postgres:
+    image: postgres:15
+    container_name: weather-postgres
+    environment:
+      POSTGRES_USER: weather_user
+      POSTGRES_PASSWORD: weather_password
+      POSTGRES_DB: weather_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres/data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+  # 11. Streamlit Dashboard - Weather Data Visualization
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: weather-dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: weather_db
+      POSTGRES_USER: weather_user
+      POSTGRES_PASSWORD: weather_password
+    depends_on:
+      - postgres
+      - spark-consumer
+      - forecast-service
+    restart: on-failure
+
